@@ -1,7 +1,7 @@
 data "azurerm_client_config" "me" {}
 
 module "entra_domain_services" {
-  source = "git::https://github.com/jeemeekay/terraform-azapi-entra-domain-services.git?ref=v0.0.8"
+  source = "git::https://github.com/jeemeekay/terraform-azapi-entra-domain-services.git?ref=v0.0.9"
 
   # Note: domain must either be the tenant's domain or a custom domain registered and verified in EID
   domain = data.azuread_domains.default.domains.1.domain_name
@@ -50,7 +50,7 @@ resource "azurerm_key_vault" "kv" {
 resource "azurerm_key_vault_secret" "wildcard_pfx" {
   name         = "multi-o4j-pfx"
   key_vault_id = azurerm_key_vault.kv.id
-  value        = filebase64("${path.module}/data/wildcard_o4j_co_uk.pfx")  # store binary as base64
+  value        = filebase64("${path.module}/data/STAR_azure_o4j_co_uk_fullchain.pfx")  # store binary as base64
   content_type = "application/x-pkcs12"
 }
 
@@ -58,4 +58,55 @@ resource "azurerm_key_vault_secret" "wildcard_pfx_password" {
   name         = "multi-o4j-pfx-password"
   key_vault_id = azurerm_key_vault.kv.id
   value        = var.pfx_password
+}
+
+########################
+# Password generation
+########################
+resource "random_password" "svc_pwd" {
+  length           = 28
+  special          = true
+  min_upper        = 2
+  min_lower        = 2
+  min_numeric      = 2
+  min_special      = 2
+  override_special = "!@#$%^&*()-_=+[]{}:,<.>?" # AAD allows these
+}
+
+########################
+# Service account user
+########################
+resource "azuread_user" "openfire_bind" {
+  user_principal_name = "${var.openfire_user_name}@${data.azuread_domains.default.domains.1.domain_name}"
+  display_name        = var.display_name
+  mail_nickname       = var.openfire_user_name
+  account_enabled     = true
+
+  # Service account: do NOT force change on next sign-in (LDAPS bind will break)
+  disable_password_expiration = true
+  password            = random_password.svc_pwd.result
+}
+
+########################
+# Add to AAD DC Administrators
+########################
+# This is the Entra group that grants admin rights in AAD DS
+
+
+
+resource "azuread_group_member" "bind_is_admin" {
+  group_object_id  = module.entra_domain_services.entra_domain_group_object_id
+  member_object_id = azuread_user.openfire_bind.id
+}
+
+########################
+# (Optional) Store password in Key Vault
+########################
+resource "azurerm_key_vault_secret" "openfire_bind_password" {
+  count        = var.key_vault_id != "" ? 1 : 0
+  name         = "openfire-bind-password"
+  key_vault_id = var.key_vault_id
+  value        = random_password.svc_pwd.result
+
+  content_type = "text/plain"
 }
